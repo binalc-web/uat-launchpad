@@ -34,9 +34,9 @@ import {
 import {
   ArrowUp,
   Check,
-  Crosshair,
   ImagePlus,
   RefreshCw,
+  Search,
   SquareMousePointer,
   Undo2,
   User,
@@ -47,6 +47,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   buildOpeningTagSnippet,
   formatPickedElementForPrompt,
@@ -326,6 +331,19 @@ function mapChatSendErrorForUser(raw) {
   return s;
 }
 
+/** Plain text + element context used for in-panel message search. */
+function getMessageSearchHaystack(msg) {
+  if (!msg || typeof msg.text !== "string") return "";
+  const text = msg.text;
+  if (msg.role === "user") {
+    const split = splitFollowupWithElementContext(text);
+    if (split) {
+      return [split.userText, split.tag, split.contextBlock || ""].join("\n");
+    }
+  }
+  return text;
+}
+
 function isCursorAgentSuccessTerminal(status) {
   if (status == null || status === "") return false;
   const u = String(status).trim().toUpperCase().replace(/\s+/g, "_");
@@ -536,6 +554,8 @@ export const ClientLinkChatPanel = React.memo(function ClientLinkChatPanel({
   const [composerEmailError, setComposerEmailError] = useState("");
   const [releaseAgentBusy, setReleaseAgentBusy] = useState(false);
   const [chatImagePreviewUrl, setChatImagePreviewUrl] = useState(null);
+  const [messageSearchOpen, setMessageSearchOpen] = useState(false);
+  const [messageSearchQuery, setMessageSearchQuery] = useState("");
 
   const chatImageFileInputRef = useRef(null);
   const lastAgentSnapshotRef = useRef({
@@ -595,6 +615,26 @@ export const ClientLinkChatPanel = React.memo(function ClientLinkChatPanel({
       ...chatMessages,
     ];
   }, [chatMessages, scratchTrim, scratchPromptAppliesToThisRelease]);
+
+  const filteredDisplayMessages = useMemo(() => {
+    const q = messageSearchQuery.trim().toLowerCase();
+    if (!q) return displayMessages;
+    return displayMessages.filter((msg) =>
+      getMessageSearchHaystack(msg).toLowerCase().includes(q),
+    );
+  }, [displayMessages, messageSearchQuery]);
+
+  useEffect(() => {
+    if (!messageSearchOpen) return;
+    const id = requestAnimationFrame(() => {
+      const el = document.getElementById("client-link-chat-message-search");
+      if (el && typeof el.focus === "function") {
+        el.focus();
+        if (typeof el.select === "function") el.select();
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [messageSearchOpen]);
 
   /** Checkout release tag, build, deploy — then refresh project JSON quietly (no full-page loader) and bust iframe cache. */
   const runTagBuildAndRefreshUi = useCallback(async () => {
@@ -1392,6 +1432,68 @@ export const ClientLinkChatPanel = React.memo(function ClientLinkChatPanel({
               <span className="truncate">LaunchPad AI Chat</span>
             </h2>
             <div className="flex shrink-0 items-center gap-0.5">
+              {showMainChatUi && canViewChat ? (
+                <Popover
+                  open={messageSearchOpen}
+                  onOpenChange={setMessageSearchOpen}
+                >
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-flex">
+                        <PopoverTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className={cn(
+                              "h-8 w-8 rounded-md text-muted-foreground hover:text-foreground",
+                              messageSearchQuery.trim() &&
+                                "text-primary hover:text-primary",
+                            )}
+                            aria-label="Search messages"
+                            aria-expanded={messageSearchOpen}
+                          >
+                            <Search className="size-4" />
+                          </Button>
+                        </PopoverTrigger>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="max-w-[14rem]">
+                      Search this conversation
+                    </TooltipContent>
+                  </Tooltip>
+                  <PopoverContent align="end" className="w-80 p-3">
+                    <Label
+                      htmlFor="client-link-chat-message-search"
+                      className="sr-only"
+                    >
+                      Search messages
+                    </Label>
+                    <Input
+                      id="client-link-chat-message-search"
+                      type="search"
+                      placeholder="Search messages…"
+                      value={messageSearchQuery}
+                      onChange={(e) => setMessageSearchQuery(e.target.value)}
+                      className="h-9 rounded-lg"
+                      autoComplete="off"
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          setMessageSearchOpen(false);
+                        }
+                      }}
+                    />
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {messageSearchQuery.trim()
+                        ? filteredDisplayMessages.length === 0
+                          ? "No matches."
+                          : `${filteredDisplayMessages.length} match${filteredDisplayMessages.length === 1 ? "" : "es"}`
+                        : `${displayMessages.length} message${displayMessages.length === 1 ? "" : "s"}`}
+                    </p>
+                  </PopoverContent>
+                </Popover>
+              ) : null}
               {showMainChatUi && canViewChat && !isLocked ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1494,6 +1596,23 @@ export const ClientLinkChatPanel = React.memo(function ClientLinkChatPanel({
           {showMainChatUi ? (
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-3">
+                {messageSearchQuery.trim() ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                    <span>
+                      Showing {filteredDisplayMessages.length} of{" "}
+                      {displayMessages.length} messages
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 shrink-0 px-2 text-xs"
+                      onClick={() => setMessageSearchQuery("")}
+                    >
+                      Clear search
+                    </Button>
+                  </div>
+                ) : null}
                 {chatMessages.length === 0 && !scratchTrim && (
                   <p className="text-sm text-muted-foreground">
                     Describe the change you want (e.g. &quot;Make the hero
@@ -1505,7 +1624,14 @@ export const ClientLinkChatPanel = React.memo(function ClientLinkChatPanel({
                     the box below; hover the tag for full details.
                   </p>
                 )}
-                {displayMessages.map((msg, index) => (
+                {messageSearchQuery.trim() &&
+                filteredDisplayMessages.length === 0 &&
+                displayMessages.length > 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No messages match &quot;{messageSearchQuery.trim()}&quot;.
+                  </p>
+                ) : null}
+                {filteredDisplayMessages.map((msg, index) => (
                   <ChatMessageRow
                     key={msg.id ?? msg.key ?? `m-${index}`}
                     msg={msg}
